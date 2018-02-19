@@ -141,6 +141,19 @@ def find_workflow_type(actions):
             break
     return type_name
 
+def manually_get_id(launcher_id):
+    list = launcher_id.split('_')
+    temp = int(list[-1]) + 1
+    if temp <= 9:
+        list[-1] = '000%d' % (temp)
+    elif temp <= 99:
+        list[-1] = '00%d' % (temp)
+    elif temp <= 999:
+        list[-1] = '0%d' % (temp)
+    else:
+        list[-1] = '%d' % (temp)
+    return '_'.join(list)
+
 # pylint: disable=R0101
 
 def get_oozie_workflow_actions(actions):
@@ -153,37 +166,53 @@ def get_oozie_workflow_actions(actions):
         if action['externalId'] != None:
             if 'job_' in action['externalId']:
                 launcher_id = convert_job_id(action['externalId'])
-                launcher_job = yarn_info(launcher_id)
                 yarnid = launcher_id
+                applicationtype = action['type']
                 information = None
-                applicationtype = launcher_job['type']
-                if launcher_job['yarnStatus'] == 'KILLED' or \
-                launcher_job['yarnFinalStatus'] == 'FAILED':
-                    status = COMPONENT_STATUS['red']
-                elif launcher_job['yarnStatus'] == 'RUNNING' or launcher_job['yarnStatus'] \
-                == 'FINISHED' or launcher_job['yarnStatus'] == 'ACCEPTED':
-                    status = COMPONENT_STATUS['green']
-                    if action['externalChildIDs']:
-                        actual_job_id = convert_job_id(action['externalChildIDs'])
-                        actual_job = yarn_info(actual_job_id)
-                        yarnid = actual_job_id
-                        applicationtype = actual_job['type']
-                        if actual_job['yarnStatus'] == 'KILLED' or \
-                        actual_job['yarnFinalStatus'] == 'FAILED':
-                            status = COMPONENT_STATUS['red']
-                        elif action['type'] == 'spark':
-                            spark_job = spark_job_handler(actual_job_id)
-                            if spark_job['state'] == 'ERROR':
-                                status = COMPONENT_STATUS['red']
-                                information = spark_job['information']
+                status = None
+                if action['status'] == 'OK' or action['status'] == 'RUNNING':
+                    launcher_job = yarn_info(launcher_id)
+                    if launcher_job['yarnFinalStatus'] == 'FAILED' or launcher_job['yarnStatus'] == 'KILLED':
+                        status = COMPONENT_STATUS['red']
+                    elif launcher_job['yarnStatus'] == 'SUBMITTED' or launcher_job['yarnStatus'] == 'ACCEPTED':
+                        status = COMPONENT_STATUS['amber']
+                    elif launcher_job['yarnStatus'] == 'RUNNING' or launcher_job['yarnStatus'] \
+                    == 'FINISHED':
+                        if action['type'] == 'spark':
+                            if action['externalChildIDs']:
+                                actual_job_id = convert_job_id(action['externalChildIDs'])
                             else:
+                                actual_job_id = manually_get_id(yarnid)
+                            actual_job = yarn_info(actual_job_id)
+                            yarnid = actual_job_id
+                            applicationtype = actual_job['type']
+                            if actual_job['yarnFinalStatus'] == 'FAILED' or actual_job['yarnStatus'] == 'KILLED':
+                                status = COMPONENT_STATUS['red']
+                            elif actual_job['yarnStatus'] == 'SUBMITTED' or actual_job['yarnStatus'] == 'ACCEPTED':
+                                status = COMPONENT_STATUS['amber']
+                            elif actual_job['yarnStatus'] == 'RUNNING':
+                                    spark_job = spark_job_handler(actual_job_id)
+                                    if spark_job['state'] == 'ERROR':
+                                        status = COMPONENT_STATUS['red']
+                                        information = spark_job['information']
+                                    else:
+                                        status = COMPONENT_STATUS['green']
+                                        information = spark_job['information']
+                            elif actual_job['yarnFinalStatus'] == 'SUCCEEDED':
                                 status = COMPONENT_STATUS['green']
-                                information = spark_job['information']
-                        else:
+                        elif action['type'] == 'shell':
                             status = COMPONENT_STATUS['green']
-                else:
+                        else:
+                            status = COMPONENT_STATUS['amber']
+                    else:
+                        status = COMPONENT_STATUS['amber']
+                        information = launcher_job['information']
+                elif action['status'] == 'ERROR':
                     status = COMPONENT_STATUS['red']
-                    information = launcher_job['information']
+                    information = action['errorMessage']
+                else:
+                    status = COMPONENT_STATUS['amber']
+                    information = action['errorMessage']
                 ret.update({"%s-%d" % ("job", count):{
                     'status': status,
                     'yarnId': yarnid,
@@ -213,7 +242,6 @@ def get_oozie_workflow_actions(actions):
                 ret.update({key: {'actions': oozie_data, 'oozieId': action['externalId'], \
                 'status': status, 'name': oozie_info['appName']}})
     return ret
-
 def process_component_data(data):
     """
     Process multiple Jobs or Subworkflows or Workflows data to find aggregate status
